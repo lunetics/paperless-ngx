@@ -4,6 +4,7 @@ from datetime import timedelta
 from http import HTTPStatus
 from typing import Any
 
+from django.conf import settings
 from django.http import HttpResponseBadRequest
 from django.http import HttpResponseForbidden
 from django.http import HttpResponseRedirect
@@ -256,9 +257,14 @@ class OauthCallbackView(GenericAPIView[Any]):
             )
             return HttpResponseBadRequest("Invalid request, see logs for more detail")
 
-        oauth_manager = PaperlessMailOAuth2Manager(
-            state=request.session.get("oauth_state"),
-        )
+        session_state = request.session.get("oauth_state")
+        if not session_state and not settings.DEBUG:
+            logger.error(
+                "Invalid oauth callback request: no state in session",
+            )
+            return HttpResponseBadRequest("Invalid request, see logs for more detail")
+
+        oauth_manager = PaperlessMailOAuth2Manager(state=session_state)
 
         state = request.query_params.get("state", "")
         if not oauth_manager.validate_state(state):
@@ -315,3 +321,5 @@ class OauthCallbackView(GenericAPIView[Any]):
             return HttpResponseRedirect(
                 f"{oauth_manager.oauth_redirect_url}?oauth_success=0",
             )
+        finally:
+            request.session.pop("oauth_state", None)

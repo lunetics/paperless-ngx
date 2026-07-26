@@ -172,3 +172,39 @@ class TestApiUiSettings(DirectoriesMixin, APITestCase):
         self.assertIsNotNone(
             response.data["settings"]["outlook_oauth_url"],
         )
+
+    @override_settings(
+        OAUTH_CALLBACK_BASE_URL="http://localhost:8000",
+        GMAIL_OAUTH_CLIENT_ID="abc123",
+        GMAIL_OAUTH_CLIENT_SECRET="def456",
+        GMAIL_OAUTH_ENABLED=True,
+        OUTLOOK_OAUTH_CLIENT_ID="ghi789",
+        OUTLOOK_OAUTH_CLIENT_SECRET="jkl012",
+        OUTLOOK_OAUTH_ENABLED=True,
+    )
+    def test_settings_oauth_state_reused_across_calls(self) -> None:
+        """
+        GIVEN:
+            - A mail account oauth flow has been started, storing a state in the session
+        WHEN:
+            - The ui_settings endpoint is called again before the flow completes
+        THEN:
+            - The same oauth state is reused, not replaced with a new one
+        """
+        response = self.client.get(self.ENDPOINT, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        first_state = self.client.session["oauth_state"]
+        first_gmail_url = response.data["settings"]["gmail_oauth_url"]
+        first_outlook_url = response.data["settings"]["outlook_oauth_url"]
+
+        response = self.client.get(self.ENDPOINT, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self.client.session["oauth_state"], first_state)
+        self.assertEqual(
+            response.data["settings"]["gmail_oauth_url"],
+            first_gmail_url,
+        )
+        self.assertEqual(
+            response.data["settings"]["outlook_oauth_url"],
+            first_outlook_url,
+        )

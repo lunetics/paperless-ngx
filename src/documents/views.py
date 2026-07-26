@@ -4002,15 +4002,19 @@ class UiSettingsView(GenericAPIView[Any]):
         ui_settings["auditlog_enabled"] = settings.AUDIT_LOG_ENABLED
 
         if settings.GMAIL_OAUTH_ENABLED or settings.OUTLOOK_OAUTH_ENABLED:
-            manager = PaperlessMailOAuth2Manager()
+            # Reuse an in-flight state instead of minting a new one on every
+            # settings fetch, or a concurrent request can invalidate a login
+            # that's still in progress.
+            manager = PaperlessMailOAuth2Manager(
+                state=request.session.get("oauth_state"),
+            )
+            request.session["oauth_state"] = manager.state
             if settings.GMAIL_OAUTH_ENABLED:
                 ui_settings["gmail_oauth_url"] = manager.get_gmail_authorization_url()
-                request.session["oauth_state"] = manager.state
             if settings.OUTLOOK_OAUTH_ENABLED:
                 ui_settings["outlook_oauth_url"] = (
                     manager.get_outlook_authorization_url()
                 )
-                request.session["oauth_state"] = manager.state
 
         ui_settings["email_enabled"] = settings.EMAIL_ENABLED
 

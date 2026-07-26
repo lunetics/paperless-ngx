@@ -138,6 +138,16 @@ class TestMailOAuth(
             MailAccount.objects.filter(imap_server="imap.gmail.com").exists(),
         )
 
+        # State is single-use and was cleared by the callback above, so a new
+        # flow needs a new state stored in the session.
+        session = self.client.session
+        session.update(
+            {
+                "oauth_state": "test_state",
+            },
+        )
+        session.save()
+
         # Test Outlook OAuth callback
         response = self.client.get(
             "/api/oauth/callback/?code=test_code&state=test_state",
@@ -179,6 +189,16 @@ class TestMailOAuth(
             self.assertFalse(
                 MailAccount.objects.filter(imap_server="imap.gmail.com").exists(),
             )
+
+            # State is single-use and was cleared by the callback above, so a
+            # new flow needs a new state stored in the session.
+            session = self.client.session
+            session.update(
+                {
+                    "oauth_state": "test_state",
+                },
+            )
+            session.save()
 
             # Test Outlook OAuth callback
             response = self.client.get(
