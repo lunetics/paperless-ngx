@@ -40,12 +40,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger("paperless_ai.hybrid")
 
 # Conservative defaults: the dense ranking is weighted double so a document
-# found ONLY by full-text can never outrank a dense top hit on its full-text
-# position alone. Documents present in BOTH rankings accumulate combined
-# scores and may re-order — and thereby displace — dense-only results from
-# the fused top slots; that re-ranking is the point of the fusion. The
-# full-text list is capped so broad natural-language matches do not flood
-# the fusion.
+# found ONLY by full-text cannot displace the leading dense ranks on its
+# full-text position alone (it can still overtake far-tail dense ranks).
+# Documents present in BOTH rankings accumulate combined scores and may
+# re-order — and thereby displace — dense-only results from the fused top
+# slots; that re-ranking is the point of the fusion. The full-text list is
+# capped so broad natural-language matches do not flood the fusion.
 # Unit caveat: DENSE_CANDIDATE_NODES bounds retrieved CHUNKS (llama-index's
 # similarity_top_k operates on nodes), while FULLTEXT_CANDIDATES bounds
 # DOCUMENTS. The dense chunk window is a hard gate — a document without a
@@ -57,7 +57,11 @@ FULLTEXT_CANDIDATES = 20
 DENSE_WEIGHT = 2.0
 FULLTEXT_WEIGHT = 1.0
 RRF_K = 5
-FUSED_TOP_DOCS = 5
+# Kept below CHAT_RETRIEVER_TOP_K on purpose: the coverage pass grants each
+# fused document one chunk slot first, so with fewer fused documents than
+# total slots the dense leaders keep their additional chunks (in the measured
+# suite every fused winner ranked <= 3).
+FUSED_TOP_DOCS = 3
 
 
 def weighted_reciprocal_rank_fusion(
@@ -93,7 +97,9 @@ def _dense_document_ranking(
     # Slow query-embedding + vector search; no ORM access during it. See
     # paperless_ai.db and #12976. Retrieving with the shared QueryBundle
     # lets llama-index cache the computed embedding on the bundle, so the
-    # caller's subsequent retrieval reuses it instead of re-embedding.
+    # caller's subsequent retrieval reuses it instead of re-embedding
+    # (verified against llama-index-core 0.14.22: the sync retrieve path
+    # mutates the passed bundle; the async path copies — chat is sync).
     with db_connection_released():
         nodes = retriever.retrieve(query_bundle)
 
@@ -135,7 +141,6 @@ def hybrid_fused_document_ids(
     # Imported lazily: this module is reached from documents.views via
     # paperless_ai.chat, importing documents.search at module load would be
     # circular.
-    from documents.search import SearchMode
     from documents.search import get_backend
 
     try:
@@ -146,10 +151,13 @@ def hybrid_fused_document_ids(
             # (documents/views.py), otherwise admins get an over-restrictive
             # owner/shared-only full-text side.
             None if user is not None and user.is_superuser else user,
-            # Chat questions are conversational free text, not the structured
-            # field syntax QUERY mode parses — same choice as the global
-            # search box (documents/views.py).
-            search_mode=SearchMode.TEXT,
+            # Deliberately the default QUERY mode: TEXT mode builds a strict
+            # consecutive-token phrase query, which matches near nothing for
+            # multi-word conversational questions (measured: the motivating
+            # exact-token cases return zero results in TEXT mode). QUERY mode
+            # keeps full recall; the ~1-in-5 conversational inputs its
+            # structured parser rejects are handled by the ValueError
+            # fallback below.
             limit=FULLTEXT_CANDIDATES,
         )
     except ValueError:
@@ -199,12 +207,13 @@ def ensure_document_coverage(
 ) -> "list[NodeWithScore]":
     """
     Select up to ``limit`` nodes so that every document in ``document_ids``
-    contributes its best-scoring node when it has one — in fused order,
-    ahead of the remaining nodes in score order. Without this, a plain
-    top-k node cut has no per-document floor and can silently drop a fused
-    winner whose chunks score below the other candidates' chunks; leading
-    with fused order also keeps the reference list consistent with the
-    fusion ranking.
+    that has a node at all contributes its highest-ranked one (first in
+    retriever order, which the vector store returns by descending
+    similarity) — in fused order, ahead of the remaining nodes in retriever
+    order. Without this, a plain top-k node cut has no per-document floor
+    and can silently drop a fused winner whose chunks score below the other
+    candidates' chunks; leading with fused order also keeps the reference
+    list consistent with the fusion ranking.
     """
     best_by_doc: dict[int, NodeWithScore] = {}
     for node in nodes:

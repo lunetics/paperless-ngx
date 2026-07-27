@@ -47,11 +47,15 @@ class TestWeightedReciprocalRankFusion:
         documents out of the fused top slots; a full-text-only document
         cannot outrank the dense leader on its own."""
         fused = weighted_reciprocal_rank_fusion(
-            [(list(range(1, 11)), 2.0), ([6, 7, 8], 1.0)],
+            [(list(range(1, 11)), 2.0), ([6, 7, 8, 999], 1.0)],
         )
         assert fused[:5] == [6, 1, 7, 2, 8]
         # Dense-only documents 3, 4, 5 are displaced from the top five.
         assert {3, 4, 5}.isdisjoint(fused[:5])
+        # The full-text-only document participates but cannot reach the
+        # leading slots on its full-text position alone.
+        assert 999 in fused
+        assert 999 not in fused[:5]
 
 
 class TestHybridFusedDocumentIds:
@@ -170,9 +174,11 @@ class TestHybridFusedDocumentIds:
 
         assert backend.search_ids.call_args.args[1] is None
 
-    def test_fulltext_uses_text_mode_for_conversational_queries(self, mocker):
-        from documents.search import SearchMode
-
+    def test_fulltext_keeps_default_query_mode_for_recall(self, mocker):
+        """TEXT mode builds a strict consecutive-token phrase query that
+        matches near nothing for conversational questions — the default
+        QUERY mode keeps recall; its parse failures are handled by the
+        ValueError fallback."""
         backend = mocker.MagicMock()
         backend.search_ids.return_value = []
         mocker.patch("documents.search.get_backend", return_value=backend)
@@ -184,7 +190,7 @@ class TestHybridFusedDocumentIds:
             user=None,
         )
 
-        assert backend.search_ids.call_args.kwargs["search_mode"] is SearchMode.TEXT
+        assert "search_mode" not in backend.search_ids.call_args.kwargs
 
     def test_parse_error_falls_back_without_error_log(self, mocker, caplog):
         backend = mocker.MagicMock()

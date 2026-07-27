@@ -117,10 +117,11 @@ def _stream_chat_with_documents(
     query_bundle = QueryBundle(query_str)
     fused_ids = None
 
-    # Hold the shared read lock for the whole operation: retrieval reads the
-    # vector store, so the connection must stay open (and the index swap must
-    # not run) until the nodes are collected; the scope is kept until the
-    # stream finishes to stay conservative about store lifetime.
+    # Hold the shared read lock only while retrieving: the index swap must
+    # not run while the store is being read, but retrieved nodes are
+    # materialized eagerly, so synthesis and streaming run outside the lock
+    # and no longer block the scheduled compaction swap for the duration of
+    # the LLM stream.
     with read_store() as store:
         index = load_or_build_index(config, store)
 
@@ -158,39 +159,39 @@ def _stream_chat_with_documents(
                 fused_ids,
                 CHAT_RETRIEVER_TOP_K,
             )
-        if not top_nodes:
-            logger.warning("No nodes found for the given documents.")
-            yield CHAT_NO_CONTENT_MESSAGE
-            return
+    if not top_nodes:
+        logger.warning("No nodes found for the given documents.")
+        yield CHAT_NO_CONTENT_MESSAGE
+        return
 
-        client = AIClient()
+    client = AIClient()
 
-        references = _get_document_references(documents, top_nodes)
+    references = _get_document_references(documents, top_nodes)
 
-        prompt_template = PromptTemplate(template=CHAT_PROMPT_TMPL)
-        response_synthesizer = get_response_synthesizer(
-            llm=client.llm,
-            prompt_helper=get_rag_prompt_helper(
-                chunk_size=config.llm_embedding_chunk_size,
-                context_size=config.llm_context_size,
-            ),
-            text_qa_template=prompt_template,
-            streaming=True,
+    prompt_template = PromptTemplate(template=CHAT_PROMPT_TMPL)
+    response_synthesizer = get_response_synthesizer(
+        llm=client.llm,
+        prompt_helper=get_rag_prompt_helper(
+            chunk_size=config.llm_embedding_chunk_size,
+            context_size=config.llm_context_size,
+        ),
+        text_qa_template=prompt_template,
+        streaming=True,
+    )
+    logger.debug("Document chat query: %s", query_str)
+    # Release the pooled DB connection for the slow streaming LLM response
+    # so it is not pinned for the whole stream; see paperless_ai.db and
+    # #12976. Synthesizing over the already-retrieved nodes (instead of a
+    # RetrieverQueryEngine) avoids a second retrieval pass and keeps the
+    # synthesized context identical to the reference selection above.
+    with db_connection_released():
+        response_stream = response_synthesizer.synthesize(
+            query_bundle,
+            nodes=top_nodes,
         )
-        logger.debug("Document chat query: %s", query_str)
-        # Release the pooled DB connection for the slow streaming LLM response
-        # so it is not pinned for the whole stream; see paperless_ai.db and
-        # #12976. Synthesizing over the already-retrieved nodes (instead of a
-        # RetrieverQueryEngine) avoids a second retrieval pass and keeps the
-        # synthesized context identical to the reference selection above.
-        with db_connection_released():
-            response_stream = response_synthesizer.synthesize(
-                query_bundle,
-                nodes=top_nodes,
-            )
-            for chunk in response_stream.response_gen:
-                yield chunk
-                sys.stdout.flush()
+        for chunk in response_stream.response_gen:
+            yield chunk
+            sys.stdout.flush()
 
-            if references:
-                yield _format_chat_metadata_trailer(references)
+        if references:
+            yield _format_chat_metadata_trailer(references)

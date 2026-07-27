@@ -110,6 +110,11 @@ def test_stream_chat_with_one_document_retrieval(
         assert (
             mock_synthesizer.synthesize.call_args.args[0].query_str == "What is this?"
         )
+        # The synthesized context must be exactly the retrieved node set.
+        assert (
+            mock_synthesizer.synthesize.call_args.kwargs["nodes"]
+            == mock_retriever_instance.retrieve.return_value
+        )
         patch_embed_nodes.assert_not_called()
         assert_chat_output(
             output,
@@ -170,6 +175,11 @@ def test_stream_chat_with_multiple_documents_retrieval(patch_embed_nodes) -> Non
 
         mock_synthesizer.synthesize.assert_called_once()
         assert mock_synthesizer.synthesize.call_args.args[0].query_str == "What's up?"
+        # The synthesized context must be exactly the retrieved node set.
+        assert (
+            mock_synthesizer.synthesize.call_args.kwargs["nodes"]
+            == mock_retriever_instance.retrieve.return_value
+        )
         patch_embed_nodes.assert_not_called()
         assert_chat_output(
             output,
