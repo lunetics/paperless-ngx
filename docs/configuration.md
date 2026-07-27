@@ -2141,6 +2141,12 @@ used with the OpenAI-compatible backend to target a custom provider or local gat
 
     Defaults to None.
 
+### [`PAPERLESS_AI_LLM_HYBRID_RETRIEVAL=<bool>`](#PAPERLESS_AI_LLM_HYBRID_RETRIEVAL) {#PAPERLESS_AI_LLM_HYBRID_RETRIEVAL}
+
+: Enables hybrid retrieval for the AI chat. Document candidates are ranked by fusing the vector-similarity ranking with the ranking of the built-in full-text search, which improves retrieval of documents referenced by exact tokens (dates, invoice numbers, quantities) among many similar documents. If the full-text search contributes no candidates, retrieval behaves exactly as if this setting were disabled.
+
+    Defaults to false.
+
 #### [`PAPERLESS_AI_LLM_ALLOW_INTERNAL_ENDPOINTS=<bool>`](#PAPERLESS_AI_LLM_ALLOW_INTERNAL_ENDPOINTS) {#PAPERLESS_AI_LLM_ALLOW_INTERNAL_ENDPOINTS}
 
 : If set to false, Paperless blocks AI endpoint URLs that resolve to non-public addresses (e.g., localhost, etc).

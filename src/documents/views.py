@@ -2266,7 +2266,11 @@ class ChatStreamingView(GenericAPIView[Any]):
             )
 
         response = StreamingHttpResponse(
-            stream_chat_with_documents(query_str=question, documents=documents),
+            stream_chat_with_documents(
+                query_str=question,
+                documents=documents,
+                user=request.user,
+            ),
             content_type="text/event-stream",
         )
         return response

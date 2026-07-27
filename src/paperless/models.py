@@ -366,6 +366,12 @@ class ApplicationConfiguration(AbstractSingletonModel):
         max_length=32,
     )
 
+    llm_hybrid_retrieval = models.BooleanField(
+        verbose_name=_("Enables hybrid retrieval for AI chat"),
+        null=True,
+        default=False,
+    )
+
     llm_request_timeout = models.PositiveSmallIntegerField(
         verbose_name=_("Sets the LLM timeout in seconds"),
         null=True,

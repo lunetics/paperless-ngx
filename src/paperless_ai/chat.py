@@ -79,15 +79,23 @@ def _format_chat_metadata_trailer(references: list[dict[str, int | str]]) -> str
     )
 
 
-def stream_chat_with_documents(query_str: str, documents: list[Document]):
+def stream_chat_with_documents(
+    query_str: str,
+    documents: list[Document],
+    user=None,
+):
     try:
-        yield from _stream_chat_with_documents(query_str, documents)
+        yield from _stream_chat_with_documents(query_str, documents, user)
     except Exception as e:
         logger.exception("Failed to stream document chat response: %s", e)
         yield CHAT_ERROR_MESSAGE
 
 
-def _stream_chat_with_documents(query_str: str, documents: list[Document]):
+def _stream_chat_with_documents(
+    query_str: str,
+    documents: list[Document],
+    user=None,
+):
     if not documents:
         yield CHAT_NO_CONTENT_MESSAGE
         return
@@ -105,6 +113,19 @@ def _stream_chat_with_documents(query_str: str, documents: list[Document]):
     # must stay open (and the swap must not run) until the stream finishes.
     with read_store() as store:
         index = load_or_build_index(config, store)
+
+        if config.llm_hybrid_retrieval:
+            from paperless_ai.hybrid import hybrid_fused_document_ids
+
+            fused_ids = hybrid_fused_document_ids(
+                index=index,
+                query_str=query_str,
+                allowed_ids={doc.pk for doc in documents},
+                user=user,
+            )
+            if fused_ids:
+                filters = _document_id_filters(str(doc_id) for doc_id in fused_ids)
+
         retriever = VectorIndexRetriever(
             index=index,
             similarity_top_k=CHAT_RETRIEVER_TOP_K,

@@ -203,6 +203,7 @@ class AIConfig(BaseConfig):
     llm_api_key: str = dataclasses.field(init=False)
     llm_endpoint: str = dataclasses.field(init=False)
     llm_output_language: str = dataclasses.field(init=False)
+    llm_hybrid_retrieval: bool = dataclasses.field(init=False)
     llm_allow_internal_endpoints: bool = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -231,6 +232,9 @@ class AIConfig(BaseConfig):
         self.llm_endpoint = app_config.llm_endpoint or settings.LLM_ENDPOINT
         self.llm_output_language = (
             app_config.llm_output_language or settings.LLM_OUTPUT_LANGUAGE
+        )
+        self.llm_hybrid_retrieval = (
+            app_config.llm_hybrid_retrieval or settings.LLM_HYBRID_RETRIEVAL
         )
         self.llm_allow_internal_endpoints = settings.LLM_ALLOW_INTERNAL_ENDPOINTS
 
