@@ -368,6 +368,14 @@ export const PaperlessConfigOptions: ConfigOption[] = [
     category: ConfigCategory.AI,
     note: $localize`Timeout in seconds for LLM requests.`,
   },
+  {
+    key: 'llm_hybrid_retrieval',
+    title: $localize`AI Chat Hybrid Retrieval`,
+    type: ConfigOptionType.Boolean,
+    config_key: 'PAPERLESS_AI_LLM_HYBRID_RETRIEVAL',
+    category: ConfigCategory.AI,
+    note: $localize`Fuse the built-in full-text search with vector retrieval when answering chat questions. Improves retrieval of documents referenced by exact tokens such as dates or invoice numbers.`,
+  },
 ]
 
 export interface PaperlessConfig extends ObjectWithId {
@@ -410,4 +418,5 @@ export interface PaperlessConfig extends ObjectWithId {
   llm_endpoint: string
   llm_output_language: string
   llm_request_timeout: number
+  llm_hybrid_retrieval: boolean
 }
