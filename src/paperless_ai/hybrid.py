@@ -105,14 +105,33 @@ def hybrid_fused_document_ids(
     # Imported lazily: this module is reached from documents.views via
     # paperless_ai.chat, importing documents.search at module load would be
     # circular.
+    from documents.search import SearchMode
     from documents.search import get_backend
 
     try:
         fulltext_ids = get_backend().search_ids(
             query_str,
-            user,
+            # search_ids applies no permission filter only for user=None;
+            # mirror the superuser mapping every other call site uses
+            # (documents/views.py), otherwise admins get an over-restrictive
+            # owner/shared-only full-text side.
+            None if user is not None and user.is_superuser else user,
+            # Chat questions are conversational free text, not the structured
+            # field syntax QUERY mode parses — same choice as the global
+            # search box (documents/views.py).
+            search_mode=SearchMode.TEXT,
             limit=FULLTEXT_CANDIDATES,
         )
+    except ValueError:
+        # Parse-level failures (SearchQueryError is a ValueError) caused by
+        # unusual user input are expected — fall back to dense-only
+        # retrieval without paging operators.
+        logger.debug(
+            "Full-text query parse failed during hybrid retrieval, "
+            "falling back to dense-only retrieval.",
+            exc_info=True,
+        )
+        return None
     except Exception:
         logger.exception(
             "Full-text search failed during hybrid retrieval, "

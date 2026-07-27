@@ -112,20 +112,69 @@ class TestHybridFusedDocumentIds:
         assert result is not None
         assert len(result) == FUSED_TOP_DOCS
 
-    def test_user_is_passed_to_fulltext_backend(self, mocker):
+    def test_regular_user_is_passed_to_fulltext_backend(self, mocker):
         backend = mocker.MagicMock()
         backend.search_ids.return_value = []
         mocker.patch("documents.search.get_backend", return_value=backend)
-        user = object()
+        user = mocker.MagicMock(is_superuser=False)
 
         hybrid_fused_document_ids(
             index=mocker.MagicMock(),
             query_str="q",
-            allowed_ids={1},
+            allowed_ids={1, 2},
             user=user,
         )
 
         assert backend.search_ids.call_args.args[1] is user
+
+    def test_superuser_is_mapped_to_none_like_sibling_call_sites(self, mocker):
+        backend = mocker.MagicMock()
+        backend.search_ids.return_value = []
+        mocker.patch("documents.search.get_backend", return_value=backend)
+        user = mocker.MagicMock(is_superuser=True)
+
+        hybrid_fused_document_ids(
+            index=mocker.MagicMock(),
+            query_str="q",
+            allowed_ids={1, 2},
+            user=user,
+        )
+
+        assert backend.search_ids.call_args.args[1] is None
+
+    def test_fulltext_uses_text_mode_for_conversational_queries(self, mocker):
+        from documents.search import SearchMode
+
+        backend = mocker.MagicMock()
+        backend.search_ids.return_value = []
+        mocker.patch("documents.search.get_backend", return_value=backend)
+
+        hybrid_fused_document_ids(
+            index=mocker.MagicMock(),
+            query_str="Frage: wie hoch war die Stromrechnung?",
+            allowed_ids={1, 2},
+            user=None,
+        )
+
+        assert backend.search_ids.call_args.kwargs["search_mode"] is SearchMode.TEXT
+
+    def test_parse_error_falls_back_without_error_log(self, mocker, caplog):
+        backend = mocker.MagicMock()
+        backend.search_ids.side_effect = ValueError("Field does not exist: 'Frage'")
+        mocker.patch("documents.search.get_backend", return_value=backend)
+
+        import logging
+
+        with caplog.at_level(logging.DEBUG, logger="paperless_ai.hybrid"):
+            result = hybrid_fused_document_ids(
+                index=mocker.MagicMock(),
+                query_str="Frage: wie hoch war die Stromrechnung?",
+                allowed_ids={1, 2},
+                user=None,
+            )
+
+        assert result is None
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
 @pytest.mark.django_db
