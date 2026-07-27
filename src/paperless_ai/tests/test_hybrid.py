@@ -38,6 +38,18 @@ class TestWeightedReciprocalRankFusion:
         assert weighted_reciprocal_rank_fusion([]) == []
         assert weighted_reciprocal_rank_fusion([([], 1.0)]) == []
 
+    def test_double_presence_may_displace_dense_only_hits(self):
+        """Pins the documented displacement semantics: a document ranked in
+        BOTH lists accumulates combined scores and may push dense-only
+        documents out of the fused top slots; a full-text-only document
+        cannot outrank the dense leader on its own."""
+        fused = weighted_reciprocal_rank_fusion(
+            [(list(range(1, 11)), 2.0), ([6, 7, 8], 1.0)],
+        )
+        assert fused[:5] == [6, 1, 7, 2, 8]
+        # Dense-only documents 3, 4, 5 are displaced from the top five.
+        assert {3, 4, 5}.isdisjoint(fused[:5])
+
 
 class TestHybridFusedDocumentIds:
     def test_empty_fulltext_result_returns_none_without_dense_query(
@@ -111,6 +123,19 @@ class TestHybridFusedDocumentIds:
 
         assert result is not None
         assert len(result) == FUSED_TOP_DOCS
+
+    def test_single_document_set_skips_hybrid_entirely(self, mocker):
+        get_backend = mocker.patch("documents.search.get_backend")
+
+        result = hybrid_fused_document_ids(
+            index=mocker.MagicMock(),
+            query_str="q",
+            allowed_ids={42},
+            user=None,
+        )
+
+        assert result is None
+        get_backend.assert_not_called()
 
     def test_regular_user_is_passed_to_fulltext_backend(self, mocker):
         backend = mocker.MagicMock()

@@ -12,6 +12,14 @@ The fusion only ever *narrows* the candidate set the caller already resolved
 (permissions stay intact) and falls back to ``None`` — meaning "leave the
 existing retrieval untouched" — whenever the full-text side contributes
 nothing or fails.
+
+Why not llama-index's ``QueryFusionRetriever``: it fuses ``NodeWithScore``
+lists produced by ``BaseRetriever`` instances, while the full-text backend
+yields bare document ids (and the consumer needs a document-id set for a
+``MetadataFilters`` IN filter); wrapping ids in a synthetic retriever would
+fabricate nodes, and its default ``num_queries`` triggers LLM query
+generation per turn. Document-level weighted RRF over ids is the smaller
+mechanism.
 """
 
 import logging
@@ -28,9 +36,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("paperless_ai.hybrid")
 
-# Conservative defaults: the dense ranking is weighted double so a fused
-# result can never displace a confident dense hit, and the full-text list is
-# capped so broad natural-language matches do not flood the fusion.
+# Conservative defaults: the dense ranking is weighted double so a document
+# found ONLY by full-text can never outrank a dense top hit on its full-text
+# position alone. Documents present in BOTH rankings accumulate combined
+# scores and may re-order — and thereby displace — dense-only results from
+# the fused top slots; that re-ranking is the point of the fusion. The
+# full-text list is capped so broad natural-language matches do not flood
+# the fusion.
 DENSE_CANDIDATES = 40
 FULLTEXT_CANDIDATES = 20
 DENSE_WEIGHT = 2.0
@@ -102,6 +114,13 @@ def hybrid_fused_document_ids(
     intersecting with ``allowed_ids`` additionally guarantees the result can
     only narrow the caller's candidate set, never extend it.
     """
+    if len(allowed_ids) <= 1:
+        # Fusion cannot narrow or usefully re-rank a single-document
+        # candidate set — skip the extra full-text search and dense ranking
+        # entirely (the single-document chat path is the most
+        # latency-sensitive one).
+        return None
+
     # Imported lazily: this module is reached from documents.views via
     # paperless_ai.chat, importing documents.search at module load would be
     # circular.
