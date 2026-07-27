@@ -59,8 +59,11 @@ FULLTEXT_WEIGHT = 1.0
 RRF_K = 5
 # Kept below CHAT_RETRIEVER_TOP_K on purpose: the coverage pass grants each
 # fused document one chunk slot first, so with fewer fused documents than
-# total slots the dense leaders keep their additional chunks (in the measured
-# suite every fused winner ranked <= 3).
+# total slots the dense leaders keep their additional chunks. The value 3
+# comes from an external 12-question production-corpus evaluation (every
+# full-text winner ranked <= 3 there — not reproducible from this repo);
+# revalidate when tuning: larger values trade dense context depth for more
+# full-text candidates.
 FUSED_TOP_DOCS = 3
 
 

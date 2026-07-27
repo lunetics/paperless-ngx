@@ -57,6 +57,35 @@ class TestWeightedReciprocalRankFusion:
         assert 999 in fused
         assert 999 not in fused[:5]
 
+    def test_fulltext_leader_can_overtake_far_tail_dense_ranks(self):
+        """The other half of the documented semantics: a top-ranked
+        full-text-only document overtakes far-tail dense ranks (here it
+        passes dense rank 8) while the leading dense ranks stay ahead."""
+        fused = weighted_reciprocal_rank_fusion(
+            [(list(range(1, 11)), 2.0), ([999], 1.0)],
+        )
+        assert fused.index(999) < fused.index(8)
+        assert fused.index(1) < fused.index(999)
+
+    def test_omitted_search_mode_resolves_to_query_mode(self):
+        """Seam pin for the call site omitting search_mode: the backend
+        default must stay QUERY — TEXT's consecutive-token phrase semantics
+        would silently empty the full-text side for conversational
+        questions (see the call-site comment)."""
+        import inspect
+
+        from documents.search import SearchMode
+        from documents.search._backend import TantivyBackend
+
+        default = (
+            inspect.signature(
+                TantivyBackend.search_ids,
+            )
+            .parameters["search_mode"]
+            .default
+        )
+        assert default is SearchMode.QUERY
+
 
 class TestHybridFusedDocumentIds:
     def test_empty_fulltext_result_returns_none_without_dense_query(
