@@ -68,8 +68,8 @@ def test_stream_chat_with_one_document_retrieval(
         patch("paperless_ai.chat.AIClient") as mock_client_cls,
         patch("paperless_ai.chat.load_or_build_index") as mock_load_index,
         patch(
-            "llama_index.core.query_engine.RetrieverQueryEngine.from_args",
-        ) as mock_query_engine_cls,
+            "llama_index.core.response_synthesizers.get_response_synthesizer",
+        ) as mock_get_synthesizer,
     ):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
@@ -96,9 +96,9 @@ def test_stream_chat_with_one_document_retrieval(
 
         mock_response_stream = MagicMock()
         mock_response_stream.response_gen = iter(["chunk1", "chunk2"])
-        mock_query_engine = MagicMock()
-        mock_query_engine_cls.return_value = mock_query_engine
-        mock_query_engine.query.return_value = mock_response_stream
+        mock_synthesizer = MagicMock()
+        mock_get_synthesizer.return_value = mock_synthesizer
+        mock_synthesizer.synthesize.return_value = mock_response_stream
 
         with patch(
             "llama_index.core.retrievers.VectorIndexRetriever",
@@ -106,7 +106,10 @@ def test_stream_chat_with_one_document_retrieval(
         ):
             output = list(stream_chat_with_documents("What is this?", [mock_document]))
 
-        mock_query_engine.query.assert_called_once_with("What is this?")
+        mock_synthesizer.synthesize.assert_called_once()
+        assert (
+            mock_synthesizer.synthesize.call_args.args[0].query_str == "What is this?"
+        )
         patch_embed_nodes.assert_not_called()
         assert_chat_output(
             output,
@@ -123,8 +126,8 @@ def test_stream_chat_with_multiple_documents_retrieval(patch_embed_nodes) -> Non
         patch("paperless_ai.chat.AIClient") as mock_client_cls,
         patch("paperless_ai.chat.load_or_build_index") as mock_load_index,
         patch(
-            "llama_index.core.query_engine.RetrieverQueryEngine.from_args",
-        ) as mock_query_engine_cls,
+            "llama_index.core.response_synthesizers.get_response_synthesizer",
+        ) as mock_get_synthesizer,
     ):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
@@ -152,9 +155,9 @@ def test_stream_chat_with_multiple_documents_retrieval(patch_embed_nodes) -> Non
         mock_response_stream = MagicMock()
         mock_response_stream.response_gen = iter(["chunk1", "chunk2"])
 
-        mock_query_engine = MagicMock()
-        mock_query_engine_cls.return_value = mock_query_engine
-        mock_query_engine.query.return_value = mock_response_stream
+        mock_synthesizer = MagicMock()
+        mock_get_synthesizer.return_value = mock_synthesizer
+        mock_synthesizer.synthesize.return_value = mock_response_stream
 
         doc1 = MagicMock(pk=1, title="Document 1", filename="doc1.pdf")
         doc2 = MagicMock(pk=2, title="Document 2", filename="doc2.pdf")
@@ -165,7 +168,8 @@ def test_stream_chat_with_multiple_documents_retrieval(patch_embed_nodes) -> Non
         ):
             output = list(stream_chat_with_documents("What's up?", [doc1, doc2]))
 
-        mock_query_engine.query.assert_called_once_with("What's up?")
+        mock_synthesizer.synthesize.assert_called_once()
+        assert mock_synthesizer.synthesize.call_args.args[0].query_str == "What's up?"
         patch_embed_nodes.assert_not_called()
         assert_chat_output(
             output,

@@ -1,5 +1,8 @@
+from types import SimpleNamespace
+
 import pytest
 from django.test import override_settings
+from llama_index.core.schema import QueryBundle
 
 from documents.tests.factories import DocumentFactory
 from paperless.config import AIConfig
@@ -63,7 +66,7 @@ class TestHybridFusedDocumentIds:
 
         result = hybrid_fused_document_ids(
             index=mocker.MagicMock(),
-            query_str="q",
+            query_bundle=QueryBundle("q"),
             allowed_ids={1, 2},
             user=None,
         )
@@ -78,7 +81,7 @@ class TestHybridFusedDocumentIds:
 
         result = hybrid_fused_document_ids(
             index=mocker.MagicMock(),
-            query_str="q",
+            query_bundle=QueryBundle("q"),
             allowed_ids={1},
             user=None,
         )
@@ -96,7 +99,7 @@ class TestHybridFusedDocumentIds:
 
         result = hybrid_fused_document_ids(
             index=mocker.MagicMock(),
-            query_str="q",
+            query_bundle=QueryBundle("q"),
             allowed_ids={1, 2},
             user=None,
         )
@@ -116,7 +119,7 @@ class TestHybridFusedDocumentIds:
 
         result = hybrid_fused_document_ids(
             index=mocker.MagicMock(),
-            query_str="q",
+            query_bundle=QueryBundle("q"),
             allowed_ids=set(range(1, 30)),
             user=None,
         )
@@ -129,7 +132,7 @@ class TestHybridFusedDocumentIds:
 
         result = hybrid_fused_document_ids(
             index=mocker.MagicMock(),
-            query_str="q",
+            query_bundle=QueryBundle("q"),
             allowed_ids={42},
             user=None,
         )
@@ -145,7 +148,7 @@ class TestHybridFusedDocumentIds:
 
         hybrid_fused_document_ids(
             index=mocker.MagicMock(),
-            query_str="q",
+            query_bundle=QueryBundle("q"),
             allowed_ids={1, 2},
             user=user,
         )
@@ -160,7 +163,7 @@ class TestHybridFusedDocumentIds:
 
         hybrid_fused_document_ids(
             index=mocker.MagicMock(),
-            query_str="q",
+            query_bundle=QueryBundle("q"),
             allowed_ids={1, 2},
             user=user,
         )
@@ -176,7 +179,7 @@ class TestHybridFusedDocumentIds:
 
         hybrid_fused_document_ids(
             index=mocker.MagicMock(),
-            query_str="Frage: wie hoch war die Stromrechnung?",
+            query_bundle=QueryBundle("Frage: wie hoch war die Stromrechnung?"),
             allowed_ids={1, 2},
             user=None,
         )
@@ -193,13 +196,55 @@ class TestHybridFusedDocumentIds:
         with caplog.at_level(logging.DEBUG, logger="paperless_ai.hybrid"):
             result = hybrid_fused_document_ids(
                 index=mocker.MagicMock(),
-                query_str="Frage: wie hoch war die Stromrechnung?",
+                query_bundle=QueryBundle("Frage: wie hoch war die Stromrechnung?"),
                 allowed_ids={1, 2},
                 user=None,
             )
 
         assert result is None
         assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+def _fake_node(document_id: int) -> SimpleNamespace:
+    return SimpleNamespace(metadata={"document_id": str(document_id)})
+
+
+class TestEnsureDocumentCoverage:
+    def test_low_scoring_fused_winner_gets_a_slot(self):
+        from paperless_ai.hybrid import ensure_document_coverage
+
+        # Score order: docs 1,1,2,2,3 then the full-text winner 9 at the end.
+        nodes = [
+            _fake_node(1),
+            _fake_node(1),
+            _fake_node(2),
+            _fake_node(2),
+            _fake_node(3),
+            _fake_node(9),
+        ]
+        picked = ensure_document_coverage(nodes, [9, 1, 2, 3], limit=5)
+
+        assert len(picked) == 5
+        assert {n.metadata["document_id"] for n in picked} >= {"1", "2", "3", "9"}
+        # Fused order leads: the full-text winner heads the selection.
+        assert picked[0].metadata["document_id"] == "9"
+
+    def test_fused_document_without_nodes_is_skipped(self):
+        from paperless_ai.hybrid import ensure_document_coverage
+
+        nodes = [_fake_node(1), _fake_node(2)]
+        picked = ensure_document_coverage(nodes, [7, 1], limit=5)
+
+        assert [n.metadata["document_id"] for n in picked] == ["1", "2"]
+
+    def test_limit_is_respected(self):
+        from paperless_ai.hybrid import ensure_document_coverage
+
+        nodes = [_fake_node(i) for i in range(1, 8)]
+        picked = ensure_document_coverage(nodes, [5, 6], limit=3)
+
+        assert len(picked) == 3
+        assert {"5", "6"} <= {n.metadata["document_id"] for n in picked}
 
 
 @pytest.mark.django_db

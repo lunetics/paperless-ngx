@@ -29,10 +29,13 @@ from paperless_ai.db import db_connection_released
 from paperless_ai.indexing import _document_id_filters
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from collections.abc import Sequence
 
     from django.contrib.auth.models import AbstractUser
     from llama_index.core.indices import VectorStoreIndex
+    from llama_index.core.schema import NodeWithScore
+    from llama_index.core.schema import QueryBundle
 
 logger = logging.getLogger("paperless_ai.hybrid")
 
@@ -43,7 +46,13 @@ logger = logging.getLogger("paperless_ai.hybrid")
 # the fused top slots; that re-ranking is the point of the fusion. The
 # full-text list is capped so broad natural-language matches do not flood
 # the fusion.
-DENSE_CANDIDATES = 40
+# Unit caveat: DENSE_CANDIDATE_NODES bounds retrieved CHUNKS (llama-index's
+# similarity_top_k operates on nodes), while FULLTEXT_CANDIDATES bounds
+# DOCUMENTS. The dense chunk window is a hard gate — a document without a
+# chunk in it cannot be recovered by fusion — so on corpora of short
+# (single-chunk) documents it spans ~40 documents, on long-document corpora
+# far fewer.
+DENSE_CANDIDATE_NODES = 40
 FULLTEXT_CANDIDATES = 20
 DENSE_WEIGHT = 2.0
 FULLTEXT_WEIGHT = 1.0
@@ -71,20 +80,22 @@ def weighted_reciprocal_rank_fusion(
 
 def _dense_document_ranking(
     index: "VectorStoreIndex",
-    query_str: str,
+    query_bundle: "QueryBundle",
     allowed_ids: set[int],
 ) -> list[int]:
     from llama_index.core.retrievers import VectorIndexRetriever
 
     retriever = VectorIndexRetriever(
         index=index,
-        similarity_top_k=DENSE_CANDIDATES,
+        similarity_top_k=DENSE_CANDIDATE_NODES,
         filters=_document_id_filters(str(doc_id) for doc_id in allowed_ids),
     )
     # Slow query-embedding + vector search; no ORM access during it. See
-    # paperless_ai.db and #12976.
+    # paperless_ai.db and #12976. Retrieving with the shared QueryBundle
+    # lets llama-index cache the computed embedding on the bundle, so the
+    # caller's subsequent retrieval reuses it instead of re-embedding.
     with db_connection_released():
-        nodes = retriever.retrieve(query_str)
+        nodes = retriever.retrieve(query_bundle)
 
     ranking: list[int] = []
     seen: set[int] = set()
@@ -102,7 +113,7 @@ def _dense_document_ranking(
 def hybrid_fused_document_ids(
     *,
     index: "VectorStoreIndex",
-    query_str: str,
+    query_bundle: "QueryBundle",
     allowed_ids: set[int],
     user: "AbstractUser | None",
 ) -> list[int] | None:
@@ -129,7 +140,7 @@ def hybrid_fused_document_ids(
 
     try:
         fulltext_ids = get_backend().search_ids(
-            query_str,
+            query_bundle.query_str,
             # search_ids applies no permission filter only for user=None;
             # mirror the superuser mapping every other call site uses
             # (documents/views.py), otherwise admins get an over-restrictive
@@ -163,7 +174,7 @@ def hybrid_fused_document_ids(
         # Nothing to fuse — keep today's behavior byte-identical.
         return None
 
-    dense_ranking = _dense_document_ranking(index, query_str, allowed_ids)
+    dense_ranking = _dense_document_ranking(index, query_bundle, allowed_ids)
 
     fused = weighted_reciprocal_rank_fusion(
         [
@@ -172,3 +183,48 @@ def hybrid_fused_document_ids(
         ],
     )
     return fused[:FUSED_TOP_DOCS] or None
+
+
+def _node_document_id(node: "NodeWithScore") -> int | None:
+    try:
+        return int(node.metadata["document_id"])
+    except (KeyError, TypeError, ValueError):  # pragma: no cover
+        return None
+
+
+def ensure_document_coverage(
+    nodes: "Sequence[NodeWithScore]",
+    document_ids: "Iterable[int]",
+    limit: int,
+) -> "list[NodeWithScore]":
+    """
+    Select up to ``limit`` nodes so that every document in ``document_ids``
+    contributes its best-scoring node when it has one — in fused order,
+    ahead of the remaining nodes in score order. Without this, a plain
+    top-k node cut has no per-document floor and can silently drop a fused
+    winner whose chunks score below the other candidates' chunks; leading
+    with fused order also keeps the reference list consistent with the
+    fusion ranking.
+    """
+    best_by_doc: dict[int, NodeWithScore] = {}
+    for node in nodes:
+        doc_id = _node_document_id(node)
+        if doc_id is not None and doc_id not in best_by_doc:
+            best_by_doc[doc_id] = node
+
+    result: list[NodeWithScore] = []
+    picked_ids: set[int] = set()
+    for doc_id in document_ids:
+        if len(result) >= limit:
+            break
+        node = best_by_doc.get(doc_id)
+        if node is not None and id(node) not in picked_ids:
+            result.append(node)
+            picked_ids.add(id(node))
+    for node in nodes:
+        if len(result) >= limit:
+            break
+        if id(node) not in picked_ids:
+            result.append(node)
+            picked_ids.add(id(node))
+    return result

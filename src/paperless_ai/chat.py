@@ -18,6 +18,10 @@ CHAT_ERROR_MESSAGE = "Sorry, something went wrong while generating a response."
 CHAT_NO_CONTENT_MESSAGE = "Sorry, I couldn't find any content to answer your question."
 MAX_CHAT_REFERENCES = 3
 CHAT_RETRIEVER_TOP_K = 5
+# When hybrid retrieval narrowed the candidate set, oversample nodes so the
+# per-document coverage pass has spare slots to draw from (a plain top-k cut
+# has no per-document floor; see paperless_ai.hybrid.ensure_document_coverage).
+HYBRID_OVERSAMPLE_TOP_K = CHAT_RETRIEVER_TOP_K * 2
 
 CHAT_PROMPT_TMPL = (
     "The context block below contains document content from the user's archive. "
@@ -101,25 +105,32 @@ def _stream_chat_with_documents(
         return
 
     from llama_index.core.prompts import PromptTemplate
-    from llama_index.core.query_engine import RetrieverQueryEngine
     from llama_index.core.response_synthesizers import get_response_synthesizer
     from llama_index.core.retrievers import VectorIndexRetriever
+    from llama_index.core.schema import QueryBundle
 
     config = AIConfig()
     filters = _document_id_filters(str(doc.pk) for doc in documents)
+    # One bundle for the whole turn: llama-index caches the computed query
+    # embedding on it, so the hybrid ranking and the main retrieval embed
+    # the question only once.
+    query_bundle = QueryBundle(query_str)
+    fused_ids = None
 
-    # Hold the shared read lock for the whole operation: the query engine
-    # retrieves from the vector store again during synthesis, so the connection
-    # must stay open (and the swap must not run) until the stream finishes.
+    # Hold the shared read lock for the whole operation: retrieval reads the
+    # vector store, so the connection must stay open (and the index swap must
+    # not run) until the nodes are collected; the scope is kept until the
+    # stream finishes to stay conservative about store lifetime.
     with read_store() as store:
         index = load_or_build_index(config, store)
 
         if config.llm_hybrid_retrieval:
+            from paperless_ai.hybrid import ensure_document_coverage
             from paperless_ai.hybrid import hybrid_fused_document_ids
 
             fused_ids = hybrid_fused_document_ids(
                 index=index,
-                query_str=query_str,
+                query_bundle=query_bundle,
                 allowed_ids={doc.pk for doc in documents},
                 user=user,
             )
@@ -128,7 +139,9 @@ def _stream_chat_with_documents(
 
         retriever = VectorIndexRetriever(
             index=index,
-            similarity_top_k=CHAT_RETRIEVER_TOP_K,
+            similarity_top_k=HYBRID_OVERSAMPLE_TOP_K
+            if fused_ids
+            else CHAT_RETRIEVER_TOP_K,
             filters=filters,
         )
 
@@ -136,7 +149,15 @@ def _stream_chat_with_documents(
         # during it, so release the pooled DB connection for its duration. See
         # #12976.
         with db_connection_released():
-            top_nodes = retriever.retrieve(query_str)
+            top_nodes = retriever.retrieve(query_bundle)
+        if fused_ids:
+            # Guarantee every fused document its best chunk before plain
+            # score order fills the remaining slots.
+            top_nodes = ensure_document_coverage(
+                top_nodes,
+                fused_ids,
+                CHAT_RETRIEVER_TOP_K,
+            )
         if not top_nodes:
             logger.warning("No nodes found for the given documents.")
             yield CHAT_NO_CONTENT_MESSAGE
@@ -156,19 +177,17 @@ def _stream_chat_with_documents(
             text_qa_template=prompt_template,
             streaming=True,
         )
-        query_engine = RetrieverQueryEngine.from_args(
-            retriever=retriever,
-            llm=client.llm,
-            response_synthesizer=response_synthesizer,
-            streaming=True,
-        )
-
         logger.debug("Document chat query: %s", query_str)
         # Release the pooled DB connection for the slow streaming LLM response
         # so it is not pinned for the whole stream; see paperless_ai.db and
-        # #12976.
+        # #12976. Synthesizing over the already-retrieved nodes (instead of a
+        # RetrieverQueryEngine) avoids a second retrieval pass and keeps the
+        # synthesized context identical to the reference selection above.
         with db_connection_released():
-            response_stream = query_engine.query(query_str)
+            response_stream = response_synthesizer.synthesize(
+                query_bundle,
+                nodes=top_nodes,
+            )
             for chunk in response_stream.response_gen:
                 yield chunk
                 sys.stdout.flush()
